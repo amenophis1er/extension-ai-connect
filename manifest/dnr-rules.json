@@ -1,0 +1,60 @@
+[
+  {
+    "id": 9001,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "remove" },
+        { "header": "referer", "operation": "remove" },
+        { "header": "sec-fetch-dest", "operation": "remove" },
+        { "header": "sec-fetch-mode", "operation": "remove" },
+        { "header": "sec-fetch-site", "operation": "remove" },
+        { "header": "user-agent", "operation": "set", "value": "claude-cli/1.0 (external, cli)" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||platform.claude.com/",
+      "resourceTypes": ["xmlhttprequest"],
+      "excludedInitiatorDomains": ["claude.com", "platform.claude.com"]
+    }
+  },
+  {
+    "id": 9002,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "remove" },
+        { "header": "referer", "operation": "remove" },
+        { "header": "sec-fetch-dest", "operation": "remove" },
+        { "header": "sec-fetch-mode", "operation": "remove" },
+        { "header": "sec-fetch-site", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||api.anthropic.com/",
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  },
+  {
+    "id": 9003,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "origin", "operation": "remove" },
+        { "header": "referer", "operation": "remove" },
+        { "header": "sec-fetch-dest", "operation": "remove" },
+        { "header": "sec-fetch-mode", "operation": "remove" },
+        { "header": "sec-fetch-site", "operation": "remove" },
+        { "header": "user-agent", "operation": "set", "value": "codex_cli_rs/1.0" }
+      ]
+    },
+    "condition": {
+      "requestDomains": ["auth.openai.com", "chatgpt.com"],
+      "resourceTypes": ["xmlhttprequest"],
+      "excludedInitiatorDomains": ["auth.openai.com", "chatgpt.com", "openai.com"]
+    }
+  }
+]
