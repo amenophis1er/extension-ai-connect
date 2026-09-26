@@ -1,4 +1,4 @@
-import type { AIAnthropicLoginStart, AIChatgptLoginStart, AIChatgptPoll, AIConfigView, AIResult, ModelInfo, ProviderKind, AISaveConnectionRequest } from './types.js';
+import type { AIAnthropicLoginStart, AIChatgptLoginStart, AIChatgptPoll, AIConfigView, AIOllamaLoginStart, AIOllamaPoll, AIResult, ModelInfo, ProviderKind, AISaveConnectionRequest } from './types.js';
 /**
  * Typed client for UI surfaces (content scripts, options/settings pages,
  * side panels). Every call is one chrome.runtime.sendMessage to the
@@ -39,6 +39,9 @@ export interface AiClient {
     }>>;
     chatgptLoginStart(): Promise<AIResult<AIChatgptLoginStart>>;
     chatgptLoginPoll(label: string): Promise<AIResult<AIChatgptPoll>>;
+    /** Ollama Cloud: open ollama.com/connect for a new device key. */
+    ollamaLoginStart(deviceName?: string): Promise<AIResult<AIOllamaLoginStart>>;
+    ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>>;
 }
 export declare function createAiClient(options?: {
     prefix?: string;

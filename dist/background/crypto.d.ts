@@ -20,5 +20,14 @@ export interface EncBlob {
 }
 /** Must be called before the first encrypt/decrypt if a custom name is used. */
 export declare function configureCryptoDb(name: string): void;
+/**
+ * Create and store an Ed25519 key pair under `id`. The private half is
+ * **non-extractable**: it signs requests inside this worker and can never be
+ * read back, so a paired device key cannot be copied out of the extension.
+ * Needs WebCrypto Ed25519 (Chrome 137+).
+ */
+export declare function createSigningKey(id: string): Promise<CryptoKeyPair>;
+export declare function getSigningKey(id: string): Promise<CryptoKeyPair | undefined>;
+export declare function deleteSigningKey(id: string): Promise<void>;
 export declare function encryptString(plain: string): Promise<EncBlob>;
 export declare function decryptBlob(blob: EncBlob | null | undefined): Promise<string>;

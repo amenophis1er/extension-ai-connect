@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ai-connect test host</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; max-width: 720px; margin: 32px auto; padding: 0 16px; }
+    section { border: 1px solid #ccc; border-radius: 8px; padding: 12px 16px; margin: 16px 0; }
+    h2 { font-size: 15px; margin: 0 0 8px; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { width: 100%; box-sizing: border-box; margin: 4px 0 8px; }
+    pre { background: #f4f4f4; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .muted { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>ai-connect test host</h1>
+
+  <section>
+    <h2>Ollama Cloud — connect this browser</h2>
+    <label>Device name (shown on the ollama.com connect page)
+      <input id="device" value="ai-connect test host (Chrome)">
+    </label>
+    <div class="row">
+      <button id="connect">Connect Ollama Cloud</button>
+      <span id="connect-status" class="muted"></span>
+    </div>
+    <p id="connect-link" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>Connections</h2>
+    <div id="connections" class="muted">Loading…</div>
+  </section>
+
+  <section>
+    <h2>Model and test completion (active connection)</h2>
+    <div class="row"><button id="models">Load models</button></div>
+    <select id="model"></select>
+    <button id="save-model">Use this model</button>
+    <textarea id="prompt" rows="3">Reply with one short sentence confirming you are working.</textarea>
+    <button id="run">Run completion</button>
+    <pre id="out"></pre>
+  </section>
+
+  <script type="module" src="page.js"></script>
+</body>
+</html>

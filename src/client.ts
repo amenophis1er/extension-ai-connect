@@ -3,6 +3,8 @@ import type {
   AIChatgptLoginStart,
   AIChatgptPoll,
   AIConfigView,
+  AIOllamaLoginStart,
+  AIOllamaPoll,
   AIResult,
   ModelInfo,
   ProviderKind,
@@ -36,6 +38,9 @@ export interface AiClient {
   anthropicPasteToken(input: { token: string; label: string }): Promise<AIResult<{ id: string }>>;
   chatgptLoginStart(): Promise<AIResult<AIChatgptLoginStart>>;
   chatgptLoginPoll(label: string): Promise<AIResult<AIChatgptPoll>>;
+  /** Ollama Cloud: open ollama.com/connect for a new device key. */
+  ollamaLoginStart(deviceName?: string): Promise<AIResult<AIOllamaLoginStart>>;
+  ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>>;
 }
 
 export function createAiClient(options: { prefix?: string } = {}): AiClient {
@@ -55,5 +60,7 @@ export function createAiClient(options: { prefix?: string } = {}): AiClient {
     anthropicPasteToken: (input) => send('ai-anthropic-paste-token', { ...input }),
     chatgptLoginStart: () => send('ai-chatgpt-login-start'),
     chatgptLoginPoll: (label) => send('ai-chatgpt-login-poll', { label }),
+    ollamaLoginStart: (deviceName) => send('ai-ollama-login-start', { deviceName }),
+    ollamaLoginPoll: (label) => send('ai-ollama-login-poll', { label }),
   };
 }

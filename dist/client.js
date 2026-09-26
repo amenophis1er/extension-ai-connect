@@ -13,5 +13,7 @@ export function createAiClient(options = {}) {
         anthropicPasteToken: (input) => send('ai-anthropic-paste-token', { ...input }),
         chatgptLoginStart: () => send('ai-chatgpt-login-start'),
         chatgptLoginPoll: (label) => send('ai-chatgpt-login-poll', { label }),
+        ollamaLoginStart: (deviceName) => send('ai-ollama-login-start', { deviceName }),
+        ollamaLoginPoll: (label) => send('ai-ollama-login-poll', { label }),
     };
 }
