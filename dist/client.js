@@ -8,6 +8,7 @@ export function createAiClient(options = {}) {
         deleteConnection: (id) => send('ai-delete-connection', { id }),
         listModels: (input) => send('ai-list-models', { ...input }),
         complete: (input) => send('ai-complete', { ...input }),
+        chat: (input) => send('ai-chat', { ...input }),
         anthropicLoginStart: () => send('ai-anthropic-login-start'),
         anthropicLoginComplete: (input) => send('ai-anthropic-login-complete', { ...input }),
         anthropicPasteToken: (input) => send('ai-anthropic-paste-token', { ...input }),

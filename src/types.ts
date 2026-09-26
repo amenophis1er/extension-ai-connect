@@ -40,6 +40,8 @@ export interface ConnectionView {
   /** e.g. "····a1b2" — last chars only, for recognition. For a
    *  'device-key' connection, the Ollama account name. */
   keyHint: string;
+  /** Bumped by every settings save (not by token refresh). A run pins it: see AIChatRequest.connectionRevision. */
+  revision: number;
 }
 
 export interface AIConfigView {
@@ -198,6 +200,78 @@ export interface AIOllamaLoginPollRequest {
 export type AIOllamaPoll =
   | { status: 'pending' }
   | { status: 'created'; id: string };
+
+/* ── Chat with tools (v0.2.0) ─────────────────────────────────────── */
+
+/** Message content: text now, images for vision-capable providers. */
+export type AIContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; mediaType: 'image/png' | 'image/jpeg'; data: string /* base64 */ };
+
+/** A tool the model may call; `inputSchema` is JSON Schema. */
+export interface AIToolSpec {
+  name: string;
+  description: string;
+  inputSchema: object;
+}
+
+/** One tool call the model made. Arguments that were not valid JSON arrive as `argsError`. */
+export interface AIToolCall {
+  id: string;
+  name: string;
+  args?: Record<string, unknown>;
+  argsError?: { raw: string; message: string };
+}
+
+export type AIMessage =
+  | { role: 'user'; content: string | AIContentPart[] }
+  | {
+      role: 'assistant';
+      content?: string;
+      toolCalls?: AIToolCall[];
+      /**
+       * Opaque provider data that must be sent back verbatim with this turn —
+       * e.g. Anthropic thinking blocks (with signatures) and tool_use blocks.
+       * Persist it with the message; never edit it.
+       */
+      providerState?: unknown;
+    }
+  | { role: 'tool'; toolCallId: string; name: string; content: string | AIContentPart[]; isError?: boolean };
+
+export interface AIChatRequest {
+  system: string;
+  messages: AIMessage[];
+  tools?: AIToolSpec[];
+  /** Default 16000. */
+  maxTokens?: number;
+  /** Default false: at most one tool call per response where the provider supports it. */
+  parallelToolCalls?: boolean;
+  /** The connection to use; default the active one. A run should pin it. */
+  connectionId?: string;
+  /** The connection's `revision` when the run started; a different one fails the call (the owner edited it). */
+  connectionRevision?: number;
+  /** The model to use; default the connection's. */
+  model?: string;
+  /** Whole-request timeout, default 120000 ms. */
+  timeoutMs?: number;
+}
+
+export type AIStopReason = 'end' | 'tool_use' | 'length' | 'refusal';
+
+export interface AIChatResult {
+  ok: boolean;
+  text?: string;
+  toolCalls?: AIToolCall[];
+  providerState?: unknown;
+  stopReason?: AIStopReason;
+  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+  error?: string;
+}
+
+/** `${prefix}:ai-chat` — the same request as `chat()`, for hosts whose caller is a page. */
+export interface AIChatMessageRequest extends AIChatRequest {
+  type: string;
+}
 
 export interface AIResult<T> {
   ok: boolean;

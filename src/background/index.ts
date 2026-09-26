@@ -4,6 +4,9 @@ import {
   type AIAnthropicLoginCompleteRequest,
   type AIAnthropicLoginStart,
   type AIAnthropicPasteTokenRequest,
+  type AIChatMessageRequest,
+  type AIChatRequest,
+  type AIChatResult,
   type AIChatgptPoll,
   type AICompleteRequest,
   type AIConfigView,
@@ -28,6 +31,9 @@ import {
   getSigningKey,
   type EncBlob,
 } from './crypto.js';
+import { anthropicBody, anthropicResult } from './chat-anthropic.js';
+import { openaiBody, openaiResult, rejectsParallel } from './chat-openai.js';
+import { readSse } from './sse.js';
 import {
   CONNECT_POLL_MS,
   CONNECT_TIMEOUT_MS,
@@ -126,6 +132,8 @@ interface StoredConnection {
   /** device-key only: the Ollama account the device key is paired with. The
    *  key pair itself lives in IndexedDB under the connection id. */
   account?: string;
+  /** Bumped by every settings save; absent means 0. */
+  revision?: number;
 }
 interface StoredConfig {
   activeId: string | null;
@@ -226,6 +234,23 @@ async function save(cfg: StoredConfig): Promise<void> {
   await chrome.storage.local.set({ [opts.storageKey]: cfg });
 }
 
+/**
+ * The one writer for the connection record.
+ *
+ * Every connection lives in one storage record, and every change is a
+ * read-modify-write of the whole record. Two of those interleaved lose one:
+ * refreshing connection A while the settings UI edits B can drop B's edit, and
+ * two refreshes can restore a used single-use refresh token. So every
+ * read-modify-write — saves, deletes, token refresh, sign-in completion —
+ * runs through this queue, one at a time. `fn` must not call withConfig.
+ */
+let configQueue: Promise<unknown> = Promise.resolve();
+function withConfig<T>(fn: (cfg: StoredConfig) => Promise<T>): Promise<T> {
+  const run = configQueue.then(async () => fn(await load()));
+  configQueue = run.catch(() => undefined);
+  return run;
+}
+
 async function toView(c: StoredConnection): Promise<ConnectionView> {
   if (c.auth === 'device-key') {
     return {
@@ -237,6 +262,7 @@ async function toView(c: StoredConnection): Promise<ConnectionView> {
       model: c.model,
       hasKey: true,
       keyHint: c.account ?? '',
+      revision: c.revision ?? 0,
     };
   }
   const key = await decryptBlob(c.apiKeyEnc);
@@ -249,6 +275,7 @@ async function toView(c: StoredConnection): Promise<ConnectionView> {
     model: c.model,
     hasKey: key.length > 0,
     keyHint: key ? `····${key.slice(-4)}` : '',
+    revision: c.revision ?? 0,
   };
 }
 
@@ -261,36 +288,39 @@ async function getView(): Promise<AIConfigView> {
 }
 
 async function setActive(req: AISetActiveRequest): Promise<AIResult<null>> {
-  const cfg = await load();
-  cfg.activeId = req.id && cfg.connections.some((c) => c.id === req.id) ? req.id : null;
-  await save(cfg);
-  return { ok: true };
+  return withConfig(async (cfg) => {
+    cfg.activeId = req.id && cfg.connections.some((c) => c.id === req.id) ? req.id : null;
+    await save(cfg);
+    return { ok: true };
+  });
 }
 
 async function saveConnection(req: AISaveConnectionRequest): Promise<AIResult<{ id: string }>> {
-  const cfg = await load();
-  let conn = req.id ? cfg.connections.find((c) => c.id === req.id) : undefined;
-  if (!conn) {
-    conn = {
-      id: crypto.randomUUID(),
-      kind: req.kind,
-      label: '',
-      baseUrl: '',
-      model: '',
-      apiKeyEnc: null,
-    };
-    cfg.connections.push(conn);
-  }
-  conn.kind = req.kind;
-  conn.label = req.label || defaultLabel(req.kind, req.baseUrl);
-  conn.baseUrl = req.kind === 'openai-compatible' ? req.baseUrl : '';
-  // Chrome's on-device model has no model list or key.
-  conn.model = req.kind === 'chrome-builtin' ? 'gemini-nano' : req.model;
-  if (req.apiKeyMode === 'set') conn.apiKeyEnc = await encryptString(req.apiKey ?? '');
-  else if (req.apiKeyMode === 'clear') conn.apiKeyEnc = null;
-  if (req.makeActive) cfg.activeId = conn.id;
-  await save(cfg);
-  return { ok: true, data: { id: conn.id } };
+  return withConfig(async (cfg) => {
+    let conn = req.id ? cfg.connections.find((c) => c.id === req.id) : undefined;
+    if (!conn) {
+      conn = {
+        id: crypto.randomUUID(),
+        kind: req.kind,
+        label: '',
+        baseUrl: '',
+        model: '',
+        apiKeyEnc: null,
+      };
+      cfg.connections.push(conn);
+    }
+    conn.kind = req.kind;
+    conn.label = req.label || defaultLabel(req.kind, req.baseUrl);
+    conn.baseUrl = req.kind === 'openai-compatible' ? req.baseUrl : '';
+    // Chrome's on-device model has no model list or key.
+    conn.model = req.kind === 'chrome-builtin' ? 'gemini-nano' : req.model;
+    if (req.apiKeyMode === 'set') conn.apiKeyEnc = await encryptString(req.apiKey ?? '');
+    else if (req.apiKeyMode === 'clear') conn.apiKeyEnc = null;
+    conn.revision = (conn.revision ?? 0) + 1;
+    if (req.makeActive) cfg.activeId = conn.id;
+    await save(cfg);
+    return { ok: true, data: { id: conn.id } };
+  });
 }
 
 /* ── Claude subscription sign-in ──────────────────────────────────── */
@@ -365,7 +395,6 @@ async function createSubscriptionConnection(input: {
   refreshToken?: string;
   expiresAt?: number;
 }): Promise<string> {
-  const cfg = await load();
   const conn: StoredConnection = {
     id: crypto.randomUUID(),
     kind: 'anthropic',
@@ -377,10 +406,17 @@ async function createSubscriptionConnection(input: {
     refreshTokenEnc: input.refreshToken ? await encryptString(input.refreshToken) : null,
     expiresAt: input.expiresAt,
   };
-  cfg.connections.push(conn);
-  cfg.activeId = conn.id;
-  await save(cfg);
+  await addConnection(conn);
   return conn.id;
+}
+
+/** Append a connection and make it active, through the one writer. */
+function addConnection(conn: StoredConnection): Promise<void> {
+  return withConfig(async (cfg) => {
+    cfg.connections.push(conn);
+    cfg.activeId = conn.id;
+    await save(cfg);
+  });
 }
 
 /* ── ChatGPT subscription (device flow) ───────────────────────────── */
@@ -429,7 +465,6 @@ async function chatgptLoginPoll(label: string): Promise<AIResult<AIChatgptPoll>>
       codeVerifier: poll.codeVerifier,
     });
     await chrome.storage.session.remove(CHATGPT_PENDING);
-    const cfg = await load();
     const conn: StoredConnection = {
       id: crypto.randomUUID(),
       kind: 'chatgpt',
@@ -442,9 +477,7 @@ async function chatgptLoginPoll(label: string): Promise<AIResult<AIChatgptPoll>>
       expiresAt: tokens.expiresAt,
       accountId: tokens.accountId,
     };
-    cfg.connections.push(conn);
-    cfg.activeId = conn.id;
-    await save(cfg);
+    await addConnection(conn);
     return { ok: true, data: { status: 'created', id: conn.id } };
   } catch (error) {
     return { ok: false, error: errMessage(error) };
@@ -498,8 +531,7 @@ async function ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>> {
     const account = await whoami(pair);
     if (!account) return { ok: true, data: { status: 'pending' } };
     await chrome.storage.session.remove(OLLAMA_PENDING);
-    const cfg = await load();
-    cfg.connections.push({
+    await addConnection({
       id: pending.id,
       kind: 'openai-compatible',
       auth: 'device-key',
@@ -509,8 +541,6 @@ async function ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>> {
       apiKeyEnc: null,
       account: account.name,
     });
-    cfg.activeId = pending.id;
-    await save(cfg);
     return { ok: true, data: { status: 'created', id: pending.id } };
   } catch (error) {
     return { ok: false, error: errMessage(error) };
@@ -518,38 +548,43 @@ async function ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>> {
 }
 
 /** Refresh an OAuth connection's token if it's near expiry, persisting the
- *  rotated pair. Returns the usable access token. */
-async function freshToken(cfg: StoredConfig, conn: StoredConnection): Promise<string> {
-  const access = await decryptBlob(conn.apiKeyEnc);
-  if (conn.auth !== 'oauth') return access; // setup-token / key: no refresh
-  const skewMs = 5 * 60_000;
-  if (conn.expiresAt && Date.now() < conn.expiresAt - skewMs) return access;
-  const refresh = await decryptBlob(conn.refreshTokenEnc);
-  if (!refresh) return access; // can't refresh; try the current token
-  const tokens =
-    conn.kind === 'chatgpt' ? await refreshOpenAiTokens(refresh) : await refreshTokens(refresh);
-  conn.apiKeyEnc = await encryptString(tokens.accessToken);
-  conn.refreshTokenEnc = await encryptString(tokens.refreshToken);
-  conn.expiresAt = tokens.expiresAt;
-  const accountId = (tokens as { accountId?: string }).accountId;
-  if (accountId) conn.accountId = accountId;
-  await save(cfg); // persist rotated single-use token immediately
-  return tokens.accessToken;
+ *  rotated pair through the one writer. Returns the usable access token. */
+async function freshToken(connId: string): Promise<string> {
+  return withConfig(async (cfg) => {
+    const conn = cfg.connections.find((c) => c.id === connId);
+    if (!conn) throw new Error('That AI connection no longer exists.');
+    const access = await decryptBlob(conn.apiKeyEnc);
+    if (conn.auth !== 'oauth') return access; // setup-token / key / device-key: no refresh
+    const skewMs = 5 * 60_000;
+    if (conn.expiresAt && Date.now() < conn.expiresAt - skewMs) return access;
+    const refresh = await decryptBlob(conn.refreshTokenEnc);
+    if (!refresh) return access; // can't refresh; try the current token
+    const tokens =
+      conn.kind === 'chatgpt' ? await refreshOpenAiTokens(refresh) : await refreshTokens(refresh);
+    conn.apiKeyEnc = await encryptString(tokens.accessToken);
+    conn.refreshTokenEnc = await encryptString(tokens.refreshToken);
+    conn.expiresAt = tokens.expiresAt;
+    const accountId = (tokens as { accountId?: string }).accountId;
+    if (accountId) conn.accountId = accountId;
+    await save(cfg); // persist rotated single-use token immediately
+    return tokens.accessToken;
+  });
 }
 
 async function deleteConnection(req: AIDeleteConnectionRequest): Promise<AIResult<null>> {
-  const cfg = await load();
-  const gone = cfg.connections.find((c) => c.id === req.id);
+  const gone = (await load()).connections.find((c) => c.id === req.id);
   if (gone?.auth === 'device-key') {
     // Un-pair on ollama.com, then drop the key; a failed un-pair still drops it.
     const pair = await getSigningKey(gone.id);
     if (pair) await ollamaDisconnect(pair).catch(() => {});
     await deleteSigningKey(gone.id);
   }
-  cfg.connections = cfg.connections.filter((c) => c.id !== req.id);
-  if (cfg.activeId === req.id) cfg.activeId = null;
-  await save(cfg);
-  return { ok: true };
+  return withConfig(async (cfg) => {
+    cfg.connections = cfg.connections.filter((c) => c.id !== req.id);
+    if (cfg.activeId === req.id) cfg.activeId = null;
+    await save(cfg);
+    return { ok: true };
+  });
 }
 
 async function listModels(req: AIListModelsRequest): Promise<AIResult<ModelInfo[]>> {
@@ -565,7 +600,7 @@ async function listModels(req: AIListModelsRequest): Promise<AIResult<ModelInfo[
     if (req.kind === 'chatgpt') {
       return { ok: true, data: CODEX_MODELS.map((id) => ({ id, name: id })) };
     }
-    const apiKey = req.apiKey || (stored ? await freshToken(cfg, stored) : '');
+    const apiKey = req.apiKey || (stored ? await freshToken(stored.id) : '');
     if (req.kind === 'anthropic' && !apiKey) throw new Error('Enter an API key first.');
     const models =
       req.kind === 'anthropic'
@@ -586,7 +621,7 @@ async function complete(req: AICompleteRequest): Promise<AIResult<string>> {
     const conn = cfg.connections.find((c) => c.id === cfg.activeId);
     if (!conn) throw new Error(`No AI connection selected. ${opts.settingsHint}`);
     const subscription = conn.auth === 'oauth' || conn.auth === 'setup-token';
-    const apiKey = await freshToken(cfg, conn);
+    const apiKey = await freshToken(conn.id);
     if (conn.kind === 'chrome-builtin') {
       // Runs in a page context (needs the page + user gesture); the worker
       // should never be asked to do it.
@@ -643,6 +678,102 @@ async function complete(req: AICompleteRequest): Promise<AIResult<string>> {
       return { ok: false, error: 'Timed out — the model took too long (a large local model can hang your machine; pick a smaller one).' };
     }
     return { ok: false, error: errMessage(error) };
+  }
+}
+
+/* ── chat with tools ─────────────────────────────────────────────── */
+
+/** Whole-request default for chat(); the stream itself keeps the worker's fetch alive. */
+const CHAT_TIMEOUT_MS = 120_000;
+
+/** Request bodies for the debug log, with image bytes replaced (they are never logged). */
+function redactImages(body: unknown): unknown {
+  return JSON.parse(JSON.stringify(body, (key, value: unknown) =>
+    (key === 'data' || key === 'url') && typeof value === 'string' && (value.length > 200 || value.startsWith('data:'))
+      ? `[${value.length} chars redacted]` : value));
+}
+
+/**
+ * One model turn with tools, called directly inside the worker (D4).
+ *
+ * Streams the response (SSE) and returns it only after the provider's terminal
+ * event. Uses the pinned connection when `connectionId` is given; if that
+ * connection is gone, or its `revision` moved since the run started, the call
+ * fails rather than send the conversation somewhere the run did not start.
+ */
+export async function chat(req: AIChatRequest, options: { signal?: AbortSignal } = {}): Promise<AIChatResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), req.timeoutMs ?? CHAT_TIMEOUT_MS);
+  const onAbort = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    if (options.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    const cfg = await load();
+    const id = req.connectionId ?? cfg.activeId;
+    const conn = cfg.connections.find((c) => c.id === id);
+    if (!conn) {
+      throw new Error(req.connectionId
+        ? 'The AI connection this run started with no longer exists. Start a new run.'
+        : `No AI connection selected. ${opts.settingsHint}`);
+    }
+    if (req.connectionRevision !== undefined && (conn.revision ?? 0) !== req.connectionRevision) {
+      throw new Error('The AI connection was changed during this run. Start a new run to use the new settings.');
+    }
+    if (conn.kind === 'chrome-builtin') throw new Error('The on-device model has no tool calling.');
+    if (conn.kind === 'chatgpt') throw new Error('Tool calling for the ChatGPT subscription is not available yet.');
+    const model = req.model ?? conn.model;
+    if (!model) throw new Error(`The AI connection has no model selected. ${opts.settingsHint}`);
+    const token = await freshToken(conn.id);
+    const debug = await debugOn();
+    const signal = controller.signal;
+
+    if (conn.kind === 'anthropic') {
+      const subscription = conn.auth === 'oauth' || conn.auth === 'setup-token';
+      if (!token) throw new Error(`The AI connection has no key. ${opts.settingsHint}`);
+      const system = subscription ? withClaudeCodeSystem(req.system).system : req.system ? [{ type: 'text' as const, text: req.system }] : [];
+      const body = anthropicBody(req, model, system);
+      if (debug) dlog('chat request', { connection: conn.label, body: redactImages(body) });
+      const res = await fetch(`${ANTHROPIC_BASE}/v1/messages`, {
+        method: 'POST', signal,
+        headers: { ...anthropicHeaders(token, subscription), 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok || !res.body) throw new Error(await describeHttp(res));
+      const result = await anthropicResult(readSse(res.body));
+      if (debug) dlog('chat result', result);
+      return result;
+    }
+
+    const base = normalizeBaseUrl(conn.baseUrl);
+    const authorize = await authorizerFor(conn, token);
+    const send = async (omitParallel: boolean) => {
+      const url = new URL(`${base}/v1/chat/completions`);
+      const body = openaiBody(req, model, base, omitParallel);
+      if (debug) dlog('chat request', { connection: conn.label, url: url.origin + url.pathname, body: redactImages(body) });
+      return fetch(url, {
+        method: 'POST', signal,
+        headers: { ...(await authorize('POST', url)), 'content-type': 'application/json', accept: 'text/event-stream' },
+        body: JSON.stringify(body),
+      });
+    };
+    let res = await send(false);
+    if (!res.ok) {
+      const text = await res.text();
+      if (!rejectsParallel(res.status, text)) throw new Error(describeHttpText(res.status, text));
+      res = await send(true);
+      if (!res.ok) throw new Error(await describeHttp(res));
+    }
+    if (!res.body) throw new Error('The provider sent no response body.');
+    const result = await openaiResult(readSse(res.body));
+    if (debug) dlog('chat result', result);
+    return result;
+  } catch (error) {
+    if (options.signal?.aborted) return { ok: false, error: 'Stopped.' };
+    if (controller.signal.aborted) return { ok: false, error: 'Timed out waiting for the model.' };
+    return { ok: false, error: errMessage(error) };
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -833,6 +964,11 @@ export function createAiMessageHandler(
       case `${p}:ai-complete`:
         void complete(message as AICompleteRequest).then(sendResponse);
         return true;
+      case `${p}:ai-chat`: {
+        const { type: _type, ...request } = message as AIChatMessageRequest;
+        void chat(request).then(sendResponse);
+        return true;
+      }
       case `${p}:ai-anthropic-login-start`:
         void anthropicLoginStart().then(sendResponse);
         return true;

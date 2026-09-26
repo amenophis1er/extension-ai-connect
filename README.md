@@ -94,6 +94,61 @@ const done = await ai.ollamaLoginPoll(''); // '' = label "Ollama Cloud (<account
 A runnable harness for all of this is in `example/test-host` (`npm run
 example`, then load that folder unpacked).
 
+## Chat with tools (agents)
+
+`chat()` is one model turn with tool calling, for an agent loop running in the
+worker. Call it directly — `runtime.sendMessage` does not reach the sender's
+own context — or send `${prefix}:ai-chat` from a page (`ai.chat(...)`).
+
+```ts
+import { chat } from '@amenophis1er/extension-ai-connect/background';
+
+const result = await chat({
+  system: 'You drive a browser.',
+  messages,                      // AIMessage[]: user / assistant / tool
+  tools: [{ name: 'browser', description: '…', inputSchema: { type: 'object', /* … */ } }],
+  connectionId, connectionRevision, // pin the run's connection (from ai.get())
+}, { signal });                  // Stop
+
+if (!result.ok) { /* show result.error once; do not retry against a live page */ }
+else if (result.toolCalls) {
+  // Persist the assistant turn WITH providerState, then answer every call id.
+  messages.push({ role: 'assistant', content: result.text, toolCalls: result.toolCalls, providerState: result.providerState });
+  for (const call of result.toolCalls) {
+    const content = call.argsError ? `Invalid arguments: ${call.argsError.message}` : await runTool(call.args);
+    messages.push({ role: 'tool', toolCallId: call.id, name: call.name, content, isError: !!call.argsError });
+  }
+}
+```
+
+What it guarantees:
+
+- **Streamed, validated to the end.** Every request streams (SSE); a result is
+  returned only after the provider's terminal event (`message_stop` /
+  `finish_reason`). An SSE error event or a stream that ends early is
+  `ok: false`, however complete the partial output looked.
+- **Native tool calling per provider.** Anthropic `tool_use`/`tool_result`
+  (system prompt and tools cached), OpenAI-compatible `tool_calls` (OpenAI,
+  OpenRouter, Ollama local and ollama.com, …). One call per response by default
+  (`parallelToolCalls: false`); servers that reject the field are retried
+  without it.
+- **Nothing half-made is handed out.** Arguments that are not valid JSON come
+  back as `argsError` (answer them with an error result). A turn cut off by the
+  token limit or a refusal (`stopReason: 'length' | 'refusal'`) carries no tool
+  calls.
+- **Replay what the provider needs.** `providerState` (Anthropic: the turn's
+  content blocks, thinking signatures included) must be stored with the
+  assistant message and sent back unchanged.
+- **Pinned connection.** With `connectionId` + `connectionRevision`, a deleted
+  or edited connection fails the call instead of sending the conversation to a
+  different provider.
+- Not yet: tool calling for the ChatGPT subscription and Chrome's built-in model.
+
+Live check: `npm run build && node scripts/smoke.mjs` runs a two-turn tool round
+trip against each provider it has credentials for (Ollama Cloud from
+`~/.ollama`, others from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`OPENROUTER_API_KEY`).
+
 ## What the host extension must declare
 
 **Permissions** — `storage`, `declarativeNetRequest` (subscription auth
