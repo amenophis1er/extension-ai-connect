@@ -9,6 +9,9 @@ families, one message-passing API:
 - **OpenAI-compatible** — OpenAI, OpenRouter, Ollama (local or cloud), any
   `/v1/chat/completions` server.
 - **ChatGPT subscription** — the Codex device flow + Responses-API backend.
+- **Ollama Cloud, connected device** — the `ollama signin` flow: a
+  non-extractable Ed25519 key paired on ollama.com, every request signed. No
+  API key to copy.
 - **Chrome built-in** (`gemini-nano`) is modeled as a connection kind, but
   inference runs in a page context; the host extension wires that side.
 
@@ -81,7 +84,15 @@ await ai.anthropicLoginComplete({ pasted, label: 'Claude (Pro/Max)' });
 const start = await ai.chatgptLoginStart();
 // poll every few seconds (chatgptPollDelay in /background gives the delay)
 const poll = await ai.chatgptLoginPoll('ChatGPT');
+
+// Ollama Cloud: start → user clicks Connect in the opened tab → poll until 'created'
+const o = await ai.ollamaLoginStart('My Extension (Chrome)'); // name shown on the connect page
+// poll every o.data.pollMs
+const done = await ai.ollamaLoginPoll(''); // '' = label "Ollama Cloud (<account>)"
 ```
+
+A runnable harness for all of this is in `example/test-host` (`npm run
+example`, then load that folder unpacked).
 
 ## What the host extension must declare
 
@@ -124,6 +135,12 @@ Rule ids are 9001–9003; renumber on collision.
   and users must first enable *“device code authorization for Codex”* in
   ChatGPT security settings. Codex only streams; the SSE is aggregated for
   you. Tokens do **not** work against `api.openai.com`.
+- Ollama Cloud device keys: `Authorization: <ssh public key>:<Ed25519
+  signature of "METHOD,PATH?ts=<unix>">`, with the same `ts` in the query —
+  ollama's own scheme, accepted on `/api/*` and `/v1/*`. An unpaired key is
+  **not** a 401 on `/api/me` (it returns an all-zero user), so pairing is
+  detected by a real user ID. Removing the connection un-pairs the key on
+  ollama.com and deletes it. Needs WebCrypto Ed25519 (Chrome 137+).
 - `<think>…</think>` / `<reasoning>…</reasoning>` blocks are stripped from
   completions (local models emit them despite instructions).
 - Debug logging: `chrome.storage.local.set({ <debugFlagKey>: true })` in the
@@ -148,6 +165,9 @@ encrypted automatically on first load.
 ## Storage/session keys used
 
 - `chrome.storage.local`: `<storageKey>` (config), `<debugFlagKey>` (flag)
-- `chrome.storage.session`: `aiConnectAnthropicLogin`, `aiConnectChatgptDevice`
-  (pending sign-ins; safe to lose — the user just restarts the flow)
-- IndexedDB `<cryptoDbName>`: the non-extractable AES key
+- `chrome.storage.session`: `aiConnectAnthropicLogin`, `aiConnectChatgptDevice`,
+  `aiConnectOllamaConnect` (pending sign-ins; safe to lose — the user just
+  restarts the flow)
+- IndexedDB `<cryptoDbName>`: the non-extractable AES key, and one
+  non-extractable Ed25519 key pair per Ollama Cloud connection
+  (`ed25519:<connection id>`)

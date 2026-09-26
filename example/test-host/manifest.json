@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "ai-connect test host",
+  "version": "0.0.1",
+  "description": "Manual test harness for extension-ai-connect: connections, sign-in flows and a test completion.",
+  "minimum_chrome_version": "137",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://ollama.com/*",
+    "https://api.anthropic.com/*",
+    "https://api.openai.com/*",
+    "https://openrouter.ai/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_title": "ai-connect test host" }
+}

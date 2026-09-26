@@ -9,6 +9,8 @@ import {
   type AIConfigView,
   type AIDeleteConnectionRequest,
   type AIListModelsRequest,
+  type AIOllamaLoginStart,
+  type AIOllamaPoll,
   type AIResult,
   type AISaveConnectionRequest,
   type AISetActiveRequest,
@@ -17,7 +19,25 @@ import {
   type ModelInfo,
   type ProviderKind,
 } from '../types.js';
-import { configureCryptoDb, decryptBlob, encryptString, type EncBlob } from './crypto.js';
+import {
+  configureCryptoDb,
+  createSigningKey,
+  decryptBlob,
+  deleteSigningKey,
+  encryptString,
+  getSigningKey,
+  type EncBlob,
+} from './crypto.js';
+import {
+  CONNECT_POLL_MS,
+  CONNECT_TIMEOUT_MS,
+  OLLAMA_BASE,
+  connectUrl,
+  disconnect as ollamaDisconnect,
+  publicKeyLine,
+  signRequest,
+  whoami,
+} from './ollama-device.js';
 import {
   exchangeCode,
   isSetupToken,
@@ -103,6 +123,9 @@ interface StoredConnection {
   expiresAt?: number;
   /** chatgpt only: account id from the JWT, sent as chatgpt-account-id. */
   accountId?: string;
+  /** device-key only: the Ollama account the device key is paired with. The
+   *  key pair itself lives in IndexedDB under the connection id. */
+  account?: string;
 }
 interface StoredConfig {
   activeId: string | null;
@@ -204,6 +227,18 @@ async function save(cfg: StoredConfig): Promise<void> {
 }
 
 async function toView(c: StoredConnection): Promise<ConnectionView> {
+  if (c.auth === 'device-key') {
+    return {
+      id: c.id,
+      kind: c.kind,
+      auth: c.auth,
+      label: c.label,
+      baseUrl: c.baseUrl,
+      model: c.model,
+      hasKey: true,
+      keyHint: c.account ?? '',
+    };
+  }
   const key = await decryptBlob(c.apiKeyEnc);
   return {
     id: c.id,
@@ -421,6 +456,67 @@ export function chatgptPollDelay(intervalSec: number, slowDowns: number): number
   return nextPollDelayMs(intervalSec, slowDowns);
 }
 
+/* ── Ollama Cloud (connect device) ────────────────────────────────── */
+
+const OLLAMA_PENDING = 'aiConnectOllamaConnect';
+
+/** Start pairing: mint a device key under a fresh connection id, open
+ *  ollama.com/connect for it, and remember the attempt in session storage
+ *  (survives an SW restart while the user clicks Connect). */
+async function ollamaLoginStart(deviceName: string): Promise<AIResult<AIOllamaLoginStart>> {
+  try {
+    const previous = (await chrome.storage.session.get(OLLAMA_PENDING))[OLLAMA_PENDING] as
+      | { id: string }
+      | undefined;
+    if (previous) await deleteSigningKey(previous.id);
+    const id = crypto.randomUUID();
+    const pair = await createSigningKey(id);
+    const url = connectUrl(deviceName.trim() || 'Chrome extension', await publicKeyLine(pair));
+    await chrome.storage.session.set({
+      [OLLAMA_PENDING]: { id, expiresAt: Date.now() + CONNECT_TIMEOUT_MS },
+    });
+    if (opts.openConsentTab) void chrome.tabs.create({ url }).catch(() => {});
+    return { ok: true, data: { connectUrl: url, pollMs: CONNECT_POLL_MS } };
+  } catch (error) {
+    return { ok: false, error: errMessage(error) };
+  }
+}
+
+/** One poll, driven by the UI: is the pending key paired yet? */
+async function ollamaLoginPoll(label: string): Promise<AIResult<AIOllamaPoll>> {
+  try {
+    const pending = (await chrome.storage.session.get(OLLAMA_PENDING))[OLLAMA_PENDING] as
+      | { id: string; expiresAt: number }
+      | undefined;
+    if (!pending) throw new Error('Sign-in expired — start again.');
+    const pair = await getSigningKey(pending.id);
+    if (!pair || Date.now() > pending.expiresAt) {
+      await chrome.storage.session.remove(OLLAMA_PENDING);
+      await deleteSigningKey(pending.id);
+      throw new Error('Sign-in timed out after 15 minutes — start again.');
+    }
+    const account = await whoami(pair);
+    if (!account) return { ok: true, data: { status: 'pending' } };
+    await chrome.storage.session.remove(OLLAMA_PENDING);
+    const cfg = await load();
+    cfg.connections.push({
+      id: pending.id,
+      kind: 'openai-compatible',
+      auth: 'device-key',
+      label: label || (account.name ? `Ollama Cloud (${account.name})` : 'Ollama Cloud'),
+      baseUrl: OLLAMA_BASE,
+      model: '',
+      apiKeyEnc: null,
+      account: account.name,
+    });
+    cfg.activeId = pending.id;
+    await save(cfg);
+    return { ok: true, data: { status: 'created', id: pending.id } };
+  } catch (error) {
+    return { ok: false, error: errMessage(error) };
+  }
+}
+
 /** Refresh an OAuth connection's token if it's near expiry, persisting the
  *  rotated pair. Returns the usable access token. */
 async function freshToken(cfg: StoredConfig, conn: StoredConnection): Promise<string> {
@@ -443,6 +539,13 @@ async function freshToken(cfg: StoredConfig, conn: StoredConnection): Promise<st
 
 async function deleteConnection(req: AIDeleteConnectionRequest): Promise<AIResult<null>> {
   const cfg = await load();
+  const gone = cfg.connections.find((c) => c.id === req.id);
+  if (gone?.auth === 'device-key') {
+    // Un-pair on ollama.com, then drop the key; a failed un-pair still drops it.
+    const pair = await getSigningKey(gone.id);
+    if (pair) await ollamaDisconnect(pair).catch(() => {});
+    await deleteSigningKey(gone.id);
+  }
   cfg.connections = cfg.connections.filter((c) => c.id !== req.id);
   if (cfg.activeId === req.id) cfg.activeId = null;
   await save(cfg);
@@ -467,7 +570,10 @@ async function listModels(req: AIListModelsRequest): Promise<AIResult<ModelInfo[
     const models =
       req.kind === 'anthropic'
         ? await anthropicModels(apiKey, subscription)
-        : await openaiModels(apiKey, normalizeBaseUrl(req.baseUrl));
+        : await openaiModels(
+            stored && !req.apiKey ? await authorizerFor(stored, apiKey) : bearerAuth(apiKey),
+            normalizeBaseUrl(req.baseUrl),
+          );
     return { ok: true, data: models };
   } catch (error) {
     return { ok: false, error: errMessage(error) };
@@ -518,7 +624,14 @@ async function complete(req: AICompleteRequest): Promise<AIResult<string>> {
                 },
                 controller.signal,
               )
-            : await openaiComplete(apiKey, normalizeBaseUrl(conn.baseUrl), conn.model, req, controller.signal, debug);
+            : await openaiComplete(
+                await authorizerFor(conn, apiKey),
+                normalizeBaseUrl(conn.baseUrl),
+                conn.model,
+                req,
+                controller.signal,
+                debug,
+              );
       const text = stripThinking(raw);
       if (debug) dlog('result', { raw, afterStripThinking: text });
       return { ok: true, data: text };
@@ -537,6 +650,21 @@ async function complete(req: AICompleteRequest): Promise<AIResult<string>> {
 
 function bearer(apiKey: string): Record<string, string> {
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+}
+
+/** Auth headers for one openai-compatible request; may also edit the URL
+ *  (a device-key signature adds `ts` to the query). */
+type Authorizer = (method: string, url: URL) => Promise<Record<string, string>>;
+
+function bearerAuth(apiKey: string): Authorizer {
+  return async () => bearer(apiKey);
+}
+
+async function authorizerFor(conn: StoredConnection, apiKey: string): Promise<Authorizer> {
+  if (conn.auth !== 'device-key') return bearerAuth(apiKey);
+  const pair = await getSigningKey(conn.id);
+  if (!pair) throw new Error('This Ollama device key is gone — remove the connection and sign in again.');
+  return (method, url) => signRequest(pair, method, url);
 }
 
 /**
@@ -574,8 +702,9 @@ async function anthropicModels(token: string, subscription: boolean): Promise<Mo
   return (json.data ?? []).map((m) => ({ id: m.id, name: m.display_name ?? m.id }));
 }
 
-async function openaiModels(apiKey: string, base: string): Promise<ModelInfo[]> {
-  const res = await fetch(`${base}/v1/models`, { headers: bearer(apiKey) });
+async function openaiModels(authorize: Authorizer, base: string): Promise<ModelInfo[]> {
+  const url = new URL(`${base}/v1/models`);
+  const res = await fetch(url, { headers: await authorize('GET', url) });
   if (!res.ok) throw new Error(await describeHttp(res));
   const json = (await res.json()) as { data?: { id: string }[] };
   return (json.data ?? [])
@@ -620,18 +749,18 @@ async function anthropicComplete(
 }
 
 async function openaiComplete(
-  apiKey: string,
+  authorize: Authorizer,
   base: string,
   model: string,
   req: AICompleteRequest,
   signal: AbortSignal,
   debug = false,
 ): Promise<string> {
-  const url = `${base}/v1/chat/completions`;
+  const url = new URL(`${base}/v1/chat/completions`);
   const res = await fetch(url, {
     method: 'POST',
     signal,
-    headers: { ...bearer(apiKey), 'content-type': 'application/json' },
+    headers: { ...(await authorize('POST', url)), 'content-type': 'application/json' },
     body: JSON.stringify({
       model,
       max_tokens: req.maxTokens ?? 1024,
@@ -645,7 +774,7 @@ async function openaiComplete(
     }),
   });
   const rawText = await res.text();
-  if (debug) dlog('http response', { url, status: res.status, body: rawText });
+  if (debug) dlog('http response', { url: url.href, status: res.status, body: rawText });
   if (!res.ok) throw new Error(describeHttpText(res.status, rawText));
   const json = JSON.parse(rawText) as { choices?: { message?: { content?: string } }[] };
   return (json.choices?.[0]?.message?.content ?? '').trim();
@@ -718,6 +847,12 @@ export function createAiMessageHandler(
         return true;
       case `${p}:ai-chatgpt-login-poll`:
         void chatgptLoginPoll((message as { label?: string }).label ?? '').then(sendResponse);
+        return true;
+      case `${p}:ai-ollama-login-start`:
+        void ollamaLoginStart((message as { deviceName?: string }).deviceName ?? '').then(sendResponse);
+        return true;
+      case `${p}:ai-ollama-login-poll`:
+        void ollamaLoginPoll((message as { label?: string }).label ?? '').then(sendResponse);
         return true;
       default:
         return false;

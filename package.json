@@ -31,7 +31,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "compile": "tsc --noEmit",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "example": "npm run build && rm -rf example/test-host/lib && cp -R dist example/test-host/lib"
   },
   "repository": {
     "type": "git",

@@ -21,8 +21,10 @@
  */
 export type ProviderKind = 'anthropic' | 'openai-compatible' | 'chatgpt' | 'chrome-builtin';
 /** How a connection authenticates. 'key' = API key; 'oauth'/'setup-token'
- *  = a Claude Pro/Max subscription token (Bearer, refreshable / long-lived). */
-export type AuthMode = 'key' | 'oauth' | 'setup-token';
+ *  = a Claude Pro/Max subscription token (Bearer, refreshable / long-lived);
+ *  'device-key' = an Ollama Cloud connected device (requests signed with a
+ *  non-extractable Ed25519 key, no secret stored). */
+export type AuthMode = 'key' | 'oauth' | 'setup-token' | 'device-key';
 /** A saved connection, minus the secret (what the settings UI sees). */
 export interface ConnectionView {
     id: string;
@@ -32,7 +34,8 @@ export interface ConnectionView {
     baseUrl: string;
     model: string;
     hasKey: boolean;
-    /** e.g. "····a1b2" — last chars only, for recognition. */
+    /** e.g. "····a1b2" — last chars only, for recognition. For a
+     *  'device-key' connection, the Ollama account name. */
     keyHint: string;
 }
 export interface AIConfigView {
@@ -126,6 +129,28 @@ export interface AIChatgptLoginPollRequest {
     label: string;
 }
 export type AIChatgptPoll = {
+    status: 'pending';
+} | {
+    status: 'created';
+    id: string;
+};
+export interface AIOllamaLoginStartRequest {
+    type: string;
+    /** Shown on the ollama.com connect page ("Connect <name> with <account>"). */
+    deviceName?: string;
+}
+/** Reply: the worker opened the connect page; the UI shows the URL as a
+ *  fallback link and polls until the user clicks Connect. */
+export interface AIOllamaLoginStart {
+    connectUrl: string;
+    /** Suggested delay between polls, ms. */
+    pollMs: number;
+}
+export interface AIOllamaLoginPollRequest {
+    type: string;
+    label: string;
+}
+export type AIOllamaPoll = {
     status: 'pending';
 } | {
     status: 'created';

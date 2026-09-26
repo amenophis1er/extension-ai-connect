@@ -78,6 +78,47 @@ async function getKey(): Promise<CryptoKey> {
   return cached;
 }
 
+function idbDelete(db: IDBDatabase, key: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/* ── device signing keys (Ollama Cloud) ───────────────────────────── */
+
+const signingId = (id: string): string => `ed25519:${id}`;
+
+/**
+ * Create and store an Ed25519 key pair under `id`. The private half is
+ * **non-extractable**: it signs requests inside this worker and can never be
+ * read back, so a paired device key cannot be copied out of the extension.
+ * Needs WebCrypto Ed25519 (Chrome 137+).
+ */
+export async function createSigningKey(id: string): Promise<CryptoKeyPair> {
+  let pair: CryptoKeyPair;
+  try {
+    pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, false, [
+      'sign',
+      'verify',
+    ])) as CryptoKeyPair;
+  } catch {
+    throw new Error('This browser cannot create Ed25519 keys (needs Chrome 137 or later).');
+  }
+  await idbPut(await openDb(), signingId(id), pair);
+  return pair;
+}
+
+export async function getSigningKey(id: string): Promise<CryptoKeyPair | undefined> {
+  return idbGet<CryptoKeyPair>(await openDb(), signingId(id));
+}
+
+export async function deleteSigningKey(id: string): Promise<void> {
+  await idbDelete(await openDb(), signingId(id));
+}
+
 const toB64 = (buf: ArrayBuffer): string =>
   btoa(String.fromCharCode(...new Uint8Array(buf)));
 const fromB64 = (s: string): ArrayBuffer =>
