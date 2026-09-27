@@ -1,3 +1,4 @@
+import { type AIChatRequest, type AIChatResult } from '../types.js';
 /**
  * All AI secret handling. Users save any number of connections; one is
  * active at a time. Keys are encrypted at rest (crypto.ts) and stored as
@@ -28,6 +29,17 @@ export interface AiHandlerOptions {
 }
 /** How long the UI should wait before the next poll. */
 export declare function chatgptPollDelay(intervalSec: number, slowDowns: number): number;
+/**
+ * One model turn with tools, called directly inside the worker (D4).
+ *
+ * Streams the response (SSE) and returns it only after the provider's terminal
+ * event. Uses the pinned connection when `connectionId` is given; if that
+ * connection is gone, or its `revision` moved since the run started, the call
+ * fails rather than send the conversation somewhere the run did not start.
+ */
+export declare function chat(req: AIChatRequest, options?: {
+    signal?: AbortSignal;
+}): Promise<AIChatResult>;
 /**
  * Build a message handler for composing with an existing onMessage listener.
  * Returns true if it handled the message (and will call sendResponse

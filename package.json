@@ -1,6 +1,6 @@
 {
   "name": "@amenophis1er/extension-ai-connect",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "BYO-key AI provider connections for Chrome extensions: encrypted key storage, Anthropic/OpenAI-compatible/ChatGPT-subscription providers, OAuth flows, one message-passing API.",
   "type": "module",
   "main": "./dist/index.js",
@@ -32,7 +32,10 @@
     "build": "tsc -p tsconfig.build.json",
     "compile": "tsc --noEmit",
     "prepare": "npm run build",
-    "example": "npm run build && rm -rf example/test-host/lib && cp -R dist example/test-host/lib"
+    "example": "npm run build && rm -rf example/test-host/lib && cp -R dist example/test-host/lib",
+    "test": "vitest run",
+    "smoke": "npm run build && node scripts/smoke.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "repository": {
     "type": "git",
@@ -43,6 +46,8 @@
   "private": false,
   "devDependencies": {
     "@types/chrome": "^0.0.280",
-    "typescript": "^5.6.0"
+    "@types/node": "^22.20.4",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.11"
   }
 }

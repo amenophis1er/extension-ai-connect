@@ -2,6 +2,8 @@ import type {
   AIAnthropicLoginStart,
   AIChatgptLoginStart,
   AIChatgptPoll,
+  AIChatRequest,
+  AIChatResult,
   AIConfigView,
   AIOllamaLoginStart,
   AIOllamaPoll,
@@ -33,6 +35,8 @@ export interface AiClient {
   }): Promise<AIResult<ModelInfo[]>>;
   /** One text completion through the active connection. */
   complete(input: { system: string; prompt: string; maxTokens?: number }): Promise<AIResult<string>>;
+  /** One model turn with tools. Inside the worker, call `chat()` from `/background` directly instead. */
+  chat(input: AIChatRequest): Promise<AIChatResult>;
   anthropicLoginStart(): Promise<AIResult<AIAnthropicLoginStart>>;
   anthropicLoginComplete(input: { pasted: string; label: string }): Promise<AIResult<{ id: string }>>;
   anthropicPasteToken(input: { token: string; label: string }): Promise<AIResult<{ id: string }>>;
@@ -55,6 +59,7 @@ export function createAiClient(options: { prefix?: string } = {}): AiClient {
     deleteConnection: (id) => send('ai-delete-connection', { id }),
     listModels: (input) => send('ai-list-models', { ...input }),
     complete: (input) => send('ai-complete', { ...input }),
+    chat: (input) => send('ai-chat', { ...input }),
     anthropicLoginStart: () => send('ai-anthropic-login-start'),
     anthropicLoginComplete: (input) => send('ai-anthropic-login-complete', { ...input }),
     anthropicPasteToken: (input) => send('ai-anthropic-paste-token', { ...input }),
