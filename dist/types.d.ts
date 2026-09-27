@@ -158,7 +158,7 @@ export type AIOllamaPoll = {
     status: 'created';
     id: string;
 };
-/** Message content: text now, images for vision-capable providers. */
+/** Message content: text, images for vision-capable providers, and PDF documents (v0.3.0). */
 export type AIContentPart = {
     type: 'text';
     text: string;
@@ -166,6 +166,13 @@ export type AIContentPart = {
     type: 'image';
     mediaType: 'image/png' | 'image/jpeg';
     data: string;
+}
+/** Anthropic: a `document` block. OpenAI-compatible: a `file` part (OpenAI, OpenRouter); servers without PDF input reject the request. */
+ | {
+    type: 'document';
+    mediaType: 'application/pdf';
+    data: string;
+    name?: string;
 };
 /** A tool the model may call; `inputSchema` is JSON Schema. */
 export interface AIToolSpec {

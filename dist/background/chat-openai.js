@@ -19,20 +19,25 @@ export const OPENAI_DEFAULT_MAX_TOKENS = 16000;
 function textOf(content) {
     return typeof content === 'string' ? content : content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
 }
-function imagesOf(content) {
-    return typeof content === 'string' ? [] : content.filter((part) => part.type === 'image');
+/** Images and documents: what a tool message cannot carry in Chat Completions. */
+function mediaOf(content) {
+    return typeof content === 'string' ? [] : content.filter((part) => part.type !== 'text');
 }
 function userContent(content) {
     if (typeof content === 'string')
         return content;
-    return content.map((part) => part.type === 'text'
-        ? { type: 'text', text: part.text }
-        : { type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } });
+    return content.map((part) => {
+        if (part.type === 'text')
+            return { type: 'text', text: part.text };
+        if (part.type === 'document')
+            return { type: 'file', file: { filename: part.name ?? 'document.pdf', file_data: `data:${part.mediaType};base64,${part.data}` } };
+        return { type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } };
+    });
 }
 export function openaiMessages(system, messages) {
     const out = system ? [{ role: 'system', content: system }] : [];
-    // Tool messages cannot carry images in Chat Completions: they follow the
-    // tool results as one user message instead.
+    // Tool messages cannot carry images or documents in Chat Completions: they
+    // follow the tool results as one user message instead.
     let pendingImages = [];
     const flushImages = () => {
         if (pendingImages.length === 0)
@@ -43,7 +48,7 @@ export function openaiMessages(system, messages) {
     for (const message of messages) {
         if (message.role === 'tool') {
             out.push({ role: 'tool', tool_call_id: message.toolCallId, content: textOf(message.content) });
-            pendingImages.push(...imagesOf(message.content));
+            pendingImages.push(...mediaOf(message.content));
             continue;
         }
         flushImages();

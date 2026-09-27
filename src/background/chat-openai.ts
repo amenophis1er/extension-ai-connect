@@ -27,22 +27,27 @@ function textOf(content: string | AIContentPart[]): string {
   return typeof content === 'string' ? content : content.filter((part) => part.type === 'text').map((part) => (part as { text: string }).text).join('\n');
 }
 
-function imagesOf(content: string | AIContentPart[]): Array<Extract<AIContentPart, { type: 'image' }>> {
-  return typeof content === 'string' ? [] : content.filter((part): part is Extract<AIContentPart, { type: 'image' }> => part.type === 'image');
+type Media = Exclude<AIContentPart, { type: 'text' }>;
+
+/** Images and documents: what a tool message cannot carry in Chat Completions. */
+function mediaOf(content: string | AIContentPart[]): Media[] {
+  return typeof content === 'string' ? [] : content.filter((part): part is Media => part.type !== 'text');
 }
 
 function userContent(content: string | AIContentPart[]): string | Array<Record<string, unknown>> {
   if (typeof content === 'string') return content;
-  return content.map((part) => part.type === 'text'
-    ? { type: 'text', text: part.text }
-    : { type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } });
+  return content.map((part) => {
+    if (part.type === 'text') return { type: 'text', text: part.text };
+    if (part.type === 'document') return { type: 'file', file: { filename: part.name ?? 'document.pdf', file_data: `data:${part.mediaType};base64,${part.data}` } };
+    return { type: 'image_url', image_url: { url: `data:${part.mediaType};base64,${part.data}` } };
+  });
 }
 
 export function openaiMessages(system: string, messages: AIMessage[]): ChatMessage[] {
   const out: ChatMessage[] = system ? [{ role: 'system', content: system }] : [];
-  // Tool messages cannot carry images in Chat Completions: they follow the
-  // tool results as one user message instead.
-  let pendingImages: Array<Extract<AIContentPart, { type: 'image' }>> = [];
+  // Tool messages cannot carry images or documents in Chat Completions: they
+  // follow the tool results as one user message instead.
+  let pendingImages: Media[] = [];
   const flushImages = () => {
     if (pendingImages.length === 0) return;
     out.push({ role: 'user', content: userContent(pendingImages) });
@@ -51,7 +56,7 @@ export function openaiMessages(system: string, messages: AIMessage[]): ChatMessa
   for (const message of messages) {
     if (message.role === 'tool') {
       out.push({ role: 'tool', tool_call_id: message.toolCallId, content: textOf(message.content) });
-      pendingImages.push(...imagesOf(message.content));
+      pendingImages.push(...mediaOf(message.content));
       continue;
     }
     flushImages();

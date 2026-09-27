@@ -52,6 +52,19 @@ describe('request body', () => {
       { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] },
     ]);
   });
+
+  it('maps a PDF in a user message to a file part, named or not', () => {
+    const messages: AIMessage[] = [{ role: 'user', content: [
+      { type: 'text', text: 'Summarize these' },
+      { type: 'document', mediaType: 'application/pdf', data: 'JVBERi0=', name: 'report.pdf' },
+      { type: 'document', mediaType: 'application/pdf', data: 'JVBERi0=' },
+    ] }];
+    expect(openaiMessages('', messages)).toEqual([{ role: 'user', content: [
+      { type: 'text', text: 'Summarize these' },
+      { type: 'file', file: { filename: 'report.pdf', file_data: 'data:application/pdf;base64,JVBERi0=' } },
+      { type: 'file', file: { filename: 'document.pdf', file_data: 'data:application/pdf;base64,JVBERi0=' } },
+    ] }]);
+  });
 });
 
 describe('streamed response', () => {
