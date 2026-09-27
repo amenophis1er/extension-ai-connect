@@ -21,7 +21,8 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "default": "./dist/types.js"
-    }
+    },
+    "./dnr-rules.json": "./manifest/dnr-rules.json"
   },
   "files": [
     "dist",

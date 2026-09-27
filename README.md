@@ -186,7 +186,8 @@ grant — `originPattern(baseUrl)` from `/types` gives you the match pattern
 for `chrome.permissions.request`.
 
 **DNR rules** (subscription auth only): merge `manifest/dnr-rules.json` into
-your ruleset. Anthropic subscription orgs reject CORS-classified requests
+your ruleset (it is exported as
+`@amenophis1er/extension-ai-connect/dnr-rules.json`). Anthropic subscription orgs reject CORS-classified requests
 and the Codex backend rejects browser-shaped ones, so these strip
 `Origin`/`Sec-Fetch-*` (and set the expected `user-agent`) on those hosts.
 Rule ids are 9001–9003; renumber on collision.
