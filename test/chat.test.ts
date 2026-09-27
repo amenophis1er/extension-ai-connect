@@ -7,6 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chat, createAiMessageHandler } from '../src/background/index.js';
 import { openaiSse, streamOf } from './helpers.js';
 
+// Stored secrets are sealed with a key kept in IndexedDB, which this test environment lacks:
+// a blob of the form { plain } stands for a sealed secret here.
+vi.mock('../src/background/crypto.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/background/crypto.js')>();
+  return { ...original, decryptBlob: async (blob: unknown) => (blob && typeof blob === 'object' && 'plain' in blob ? String((blob as { plain: string }).plain) : original.decryptBlob(blob as never)) };
+});
+
 const STORAGE_KEY = 'aiConnections';
 let local: Map<string, unknown>;
 
@@ -94,10 +101,27 @@ describe('chat()', () => {
     expect(await chat({ system: '', messages: [], timeoutMs: 5 })).toEqual({ ok: false, error: 'Timed out waiting for the model.' });
   });
 
-  it('declines providers without tool calling here', async () => {
-    seed([conn('g', { kind: 'chatgpt' }), conn('n', { kind: 'chrome-builtin' })], 'g');
-    expect((await chat({ system: '', messages: [] })).error).toMatch(/ChatGPT subscription is not available yet/);
-    expect((await chat({ system: '', messages: [], connectionId: 'n' })).error).toMatch(/no tool calling/);
+  it('declines the on-device model, which has no tool calling', async () => {
+    seed([conn('n', { kind: 'chrome-builtin' })], 'n');
+    expect((await chat({ system: '', messages: [] })).error).toMatch(/no tool calling/);
+  });
+
+  it('sends a ChatGPT subscription turn to the Codex backend with the account, and reads its tool call', async () => {
+    seed([conn('g', { kind: 'chatgpt', baseUrl: '', model: 'gpt-5.5', auth: 'oauth', accountId: 'acct-1',
+      apiKeyEnc: { plain: 'access-token' }, expiresAt: Date.now() + 3_600_000 })], 'g');
+    const stream = [
+      { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc1', call_id: 'call_1', name: 'browser' } },
+      { type: 'response.function_call_arguments.delta', item_id: 'fc1', delta: '{"action":"observe"}' },
+      { type: 'response.completed', response: {} },
+    ].map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+    const fetched = vi.fn(async () => sseResponse(stream));
+    vi.stubGlobal('fetch', fetched);
+    const result = await chat({ system: 'Drive.', messages: [{ role: 'user', content: 'go' }], tools: [{ name: 'browser', description: 'd', inputSchema: {} }] });
+    expect(result).toMatchObject({ ok: true, toolCalls: [{ id: 'call_1', name: 'browser', args: { action: 'observe' } }], stopReason: 'tool_use' });
+    const [url, init] = fetched.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://chatgpt.com/backend-api/codex/responses');
+    expect(init.headers).toMatchObject({ authorization: 'Bearer access-token', 'chatgpt-account-id': 'acct-1' });
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'gpt-5.5', instructions: 'Drive.', store: false });
   });
 
   it('answers the ai-chat message op with the same result', async () => {

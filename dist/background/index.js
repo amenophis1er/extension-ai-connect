@@ -2,6 +2,7 @@ import { normalizeBaseUrl, defaultLabel, } from '../types.js';
 import { configureCryptoDb, createSigningKey, decryptBlob, deleteSigningKey, encryptString, getSigningKey, } from './crypto.js';
 import { anthropicBody, anthropicResult } from './chat-anthropic.js';
 import { openaiBody, openaiResult, rejectsParallel } from './chat-openai.js';
+import { CODEX_RESPONSES_URL, codexBody, codexHttpError, codexResult } from './chat-codex.js';
 import { readSse } from './sse.js';
 import { CONNECT_POLL_MS, CONNECT_TIMEOUT_MS, OLLAMA_BASE, connectUrl, disconnect as ollamaDisconnect, publicKeyLine, signRequest, whoami, } from './ollama-device.js';
 import { exchangeCode, isSetupToken, refreshTokens, startLogin, withClaudeCodeSystem, } from './anthropic-oauth.js';
@@ -561,8 +562,6 @@ export async function chat(req, options = {}) {
         }
         if (conn.kind === 'chrome-builtin')
             throw new Error('The on-device model has no tool calling.');
-        if (conn.kind === 'chatgpt')
-            throw new Error('Tool calling for the ChatGPT subscription is not available yet.');
         const model = req.model ?? conn.model;
         if (!model)
             throw new Error(`The AI connection has no model selected. ${opts.settingsHint}`);
@@ -585,6 +584,31 @@ export async function chat(req, options = {}) {
             if (!res.ok || !res.body)
                 throw new Error(await describeHttp(res));
             const result = await anthropicResult(readSse(res.body));
+            if (debug)
+                dlog('chat result', result);
+            return result;
+        }
+        if (conn.kind === 'chatgpt') {
+            if (!token)
+                throw new Error(`The ChatGPT sign-in is missing. ${opts.settingsHint}`);
+            const body = codexBody(req, model);
+            if (debug)
+                dlog('chat request', { connection: conn.label, body: redactImages(body) });
+            const res = await fetch(CODEX_RESPONSES_URL, {
+                method: 'POST', signal,
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    ...(conn.accountId ? { 'chatgpt-account-id': conn.accountId } : {}),
+                    originator: 'codex_cli_rs', 'openai-beta': 'responses=experimental',
+                    'content-type': 'application/json', accept: 'text/event-stream',
+                },
+                body: JSON.stringify(body),
+            });
+            if (!res.ok)
+                throw new Error(codexHttpError(res.status, await res.text()));
+            if (!res.body)
+                throw new Error('The provider sent no response body.');
+            const result = await codexResult(readSse(res.body));
             if (debug)
                 dlog('chat result', result);
             return result;

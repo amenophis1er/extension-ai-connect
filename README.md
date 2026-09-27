@@ -136,6 +136,11 @@ What it guarantees:
   back as `argsError` (answer them with an error result). A turn cut off by the
   token limit or a refusal (`stopReason: 'length' | 'refusal'`) carries no tool
   calls.
+- **ChatGPT subscription too** (0.4.0). A ChatGPT Plus/Pro connection (signed
+  in with the device code) talks to OpenAI's Codex backend — the Responses API
+  — with the same tools: calls and results become `function_call` /
+  `function_call_output` items. No output cap is sent (the backend refuses
+  one) and nothing is stored server-side (`store: false`).
 - **Images and PDFs.** Content can be `{type:'image', mediaType, data}` or,
   since 0.3.0, `{type:'document', mediaType:'application/pdf', data, name?}`
   (base64). Anthropic gets `image` / `document` blocks; OpenAI-compatible
