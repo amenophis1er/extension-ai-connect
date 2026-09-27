@@ -19,9 +19,13 @@ export const ANTHROPIC_DEFAULT_MAX_TOKENS = 16000;
 function parts(content) {
     if (typeof content === 'string')
         return content;
-    return content.map((part) => part.type === 'text'
-        ? { type: 'text', text: part.text }
-        : { type: 'image', source: { type: 'base64', media_type: part.mediaType, data: part.data } });
+    return content.map((part) => {
+        if (part.type === 'text')
+            return { type: 'text', text: part.text };
+        if (part.type === 'document')
+            return { type: 'document', source: { type: 'base64', media_type: part.mediaType, data: part.data }, ...(part.name ? { title: part.name } : {}) };
+        return { type: 'image', source: { type: 'base64', media_type: part.mediaType, data: part.data } };
+    });
 }
 /** The assistant turn as blocks: the provider's own blocks when we have them, else rebuilt. */
 function assistantBlocks(message) {

@@ -136,6 +136,12 @@ What it guarantees:
   back as `argsError` (answer them with an error result). A turn cut off by the
   token limit or a refusal (`stopReason: 'length' | 'refusal'`) carries no tool
   calls.
+- **Images and PDFs.** Content can be `{type:'image', mediaType, data}` or,
+  since 0.3.0, `{type:'document', mediaType:'application/pdf', data, name?}`
+  (base64). Anthropic gets `image` / `document` blocks; OpenAI-compatible
+  servers get `image_url` / `file` parts, moved out of tool messages into a
+  user message after them. A server without image or PDF input rejects the
+  request: fall back to text.
 - **Replay what the provider needs.** `providerState` (Anthropic: the turn's
   content blocks, thinking signatures included) must be stored with the
   assistant message and sent back unchanged.

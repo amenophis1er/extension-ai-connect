@@ -203,10 +203,12 @@ export type AIOllamaPoll =
 
 /* ── Chat with tools (v0.2.0) ─────────────────────────────────────── */
 
-/** Message content: text now, images for vision-capable providers. */
+/** Message content: text, images for vision-capable providers, and PDF documents (v0.3.0). */
 export type AIContentPart =
   | { type: 'text'; text: string }
-  | { type: 'image'; mediaType: 'image/png' | 'image/jpeg'; data: string /* base64 */ };
+  | { type: 'image'; mediaType: 'image/png' | 'image/jpeg'; data: string /* base64 */ }
+  /** Anthropic: a `document` block. OpenAI-compatible: a `file` part (OpenAI, OpenRouter); servers without PDF input reject the request. */
+  | { type: 'document'; mediaType: 'application/pdf'; data: string /* base64 */; name?: string };
 
 /** A tool the model may call; `inputSchema` is JSON Schema. */
 export interface AIToolSpec {

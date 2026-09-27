@@ -80,6 +80,17 @@ describe('request body', () => {
       ] }] },
     ]);
   });
+
+  it('maps a PDF in a user message to a base64 document block, titled by its name', () => {
+    const messages: AIMessage[] = [{ role: 'user', content: [
+      { type: 'document', mediaType: 'application/pdf', data: 'JVBERi0=', name: 'report.pdf' },
+      { type: 'text', text: 'Summarize it' },
+    ] }];
+    expect(anthropicMessages(messages)).toEqual([{ role: 'user', content: [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' }, title: 'report.pdf' },
+      { type: 'text', text: 'Summarize it' },
+    ] }]);
+  });
 });
 
 describe('streamed response', () => {
