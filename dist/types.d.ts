@@ -241,6 +241,8 @@ export interface AIChatResult {
         cacheWriteTokens?: number;
     };
     error?: string;
+    /** A failure worth one more try: the connection dropped, or the provider's server failed (5xx, overloaded). */
+    retryable?: boolean;
 }
 /** `${prefix}:ai-chat` — the same request as `chat()`, for hosts whose caller is a page. */
 export interface AIChatMessageRequest extends AIChatRequest {

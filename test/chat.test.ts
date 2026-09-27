@@ -101,6 +101,25 @@ describe('chat()', () => {
     expect(await chat({ system: '', messages: [], timeoutMs: 5 })).toEqual({ ok: false, error: 'Timed out waiting for the model.' });
   });
 
+  it('names who could not be reached when the connection drops, and marks it worth retrying', async () => {
+    seed([conn('a', { kind: 'anthropic', baseUrl: '', model: 'claude', apiKeyEnc: { plain: 'k' } }), conn('l'), conn('r', { baseUrl: 'https://openrouter.ai/api' })], 'a');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    expect(await chat({ system: '', messages: [] })).toEqual({ ok: false, error: 'The connection to Anthropic dropped (network error).', retryable: true });
+    const local = await chat({ system: '', messages: [], connectionId: 'l' });
+    expect(local.error).toMatch(/model server on this computer .*OLLAMA_ORIGINS/);
+    expect((await chat({ system: '', messages: [], connectionId: 'r' })).error).toBe('The connection to openrouter.ai dropped (network error).');
+  });
+
+  it('marks server failures and cut-off streams as worth retrying, and not a request the provider refused', async () => {
+    seed([conn('l')], 'l');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"overloaded"}', { status: 503 })));
+    expect(await chat({ system: '', messages: [] })).toMatchObject({ ok: false, retryable: true });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"bad model"}', { status: 400 })));
+    expect(await chat({ system: '', messages: [] })).not.toHaveProperty('retryable');
+    vi.stubGlobal('fetch', vi.fn(async () => sseResponse('data: {"choices":[{"index":0,"delta":{"content":"half"}}]}\n\n')));
+    expect(await chat({ system: '', messages: [] })).toMatchObject({ ok: false, error: 'The response stream ended before it finished.', retryable: true });
+  });
+
   it('declines the on-device model, which has no tool calling', async () => {
     seed([conn('n', { kind: 'chrome-builtin' })], 'n');
     expect((await chat({ system: '', messages: [] })).error).toMatch(/no tool calling/);
