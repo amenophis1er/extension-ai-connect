@@ -2,6 +2,7 @@ import { normalizeBaseUrl, defaultLabel, } from '../types.js';
 import { configureCryptoDb, createSigningKey, decryptBlob, deleteSigningKey, encryptString, getSigningKey, } from './crypto.js';
 import { anthropicBody, anthropicResult } from './chat-anthropic.js';
 import { openaiBody, openaiResult, rejectsParallel } from './chat-openai.js';
+import { CODEX_RESPONSES_URL, codexBody, codexHttpError, codexResult } from './chat-codex.js';
 import { readSse } from './sse.js';
 import { CONNECT_POLL_MS, CONNECT_TIMEOUT_MS, OLLAMA_BASE, connectUrl, disconnect as ollamaDisconnect, publicKeyLine, signRequest, whoami, } from './ollama-device.js';
 import { exchangeCode, isSetupToken, refreshTokens, startLogin, withClaudeCodeSystem, } from './anthropic-oauth.js';
@@ -541,6 +542,7 @@ function redactImages(body) {
  * fails rather than send the conversation somewhere the run did not start.
  */
 export async function chat(req, options = {}) {
+    let used;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), req.timeoutMs ?? CHAT_TIMEOUT_MS);
     const onAbort = () => controller.abort(options.signal?.reason);
@@ -556,13 +558,12 @@ export async function chat(req, options = {}) {
                 ? 'The AI connection this run started with no longer exists. Start a new run.'
                 : `No AI connection selected. ${opts.settingsHint}`);
         }
+        used = conn;
         if (req.connectionRevision !== undefined && (conn.revision ?? 0) !== req.connectionRevision) {
             throw new Error('The AI connection was changed during this run. Start a new run to use the new settings.');
         }
         if (conn.kind === 'chrome-builtin')
             throw new Error('The on-device model has no tool calling.');
-        if (conn.kind === 'chatgpt')
-            throw new Error('Tool calling for the ChatGPT subscription is not available yet.');
         const model = req.model ?? conn.model;
         if (!model)
             throw new Error(`The AI connection has no model selected. ${opts.settingsHint}`);
@@ -587,7 +588,32 @@ export async function chat(req, options = {}) {
             const result = await anthropicResult(readSse(res.body));
             if (debug)
                 dlog('chat result', result);
-            return result;
+            return transient(result);
+        }
+        if (conn.kind === 'chatgpt') {
+            if (!token)
+                throw new Error(`The ChatGPT sign-in is missing. ${opts.settingsHint}`);
+            const body = codexBody(req, model);
+            if (debug)
+                dlog('chat request', { connection: conn.label, body: redactImages(body) });
+            const res = await fetch(CODEX_RESPONSES_URL, {
+                method: 'POST', signal,
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    ...(conn.accountId ? { 'chatgpt-account-id': conn.accountId } : {}),
+                    originator: 'codex_cli_rs', 'openai-beta': 'responses=experimental',
+                    'content-type': 'application/json', accept: 'text/event-stream',
+                },
+                body: JSON.stringify(body),
+            });
+            if (!res.ok)
+                throw new Error(codexHttpError(res.status, await res.text()));
+            if (!res.body)
+                throw new Error('The provider sent no response body.');
+            const result = await codexResult(readSse(res.body));
+            if (debug)
+                dlog('chat result', result);
+            return transient(result);
         }
         const base = normalizeBaseUrl(conn.baseUrl);
         const authorize = await authorizerFor(conn, token);
@@ -616,14 +642,18 @@ export async function chat(req, options = {}) {
         const result = await openaiResult(readSse(res.body));
         if (debug)
             dlog('chat result', result);
-        return result;
+        return transient(result);
     }
     catch (error) {
         if (options.signal?.aborted)
             return { ok: false, error: 'Stopped.' };
         if (controller.signal.aborted)
             return { ok: false, error: 'Timed out waiting for the model.' };
-        return { ok: false, error: errMessage(error) };
+        // A dropped connection or a server-side failure: nothing was acted on, so the caller may send the same request again.
+        if (error instanceof TypeError)
+            return { ok: false, error: chatNetworkError(used), retryable: true };
+        const message = errMessage(error);
+        return { ok: false, error: message, ...(/^HTTP (5\d\d|529)\b|overloaded|backend failed/i.test(message) ? { retryable: true } : {}) };
     }
     finally {
         clearTimeout(timer);
@@ -759,6 +789,26 @@ function describeHttpText(status, body) {
         detail = body.slice(0, 200);
     }
     return `HTTP ${status}${detail ? `: ${detail}` : ''}`;
+}
+/** A stream cut short or an overloaded provider mid-answer: worth one more try, like a dropped connection. */
+function transient(result) {
+    return !result.ok && /ended before it finished|overloaded/i.test(result.error ?? '') ? { ...result, retryable: true } : result;
+}
+/** A network failure in chat(), naming who could not be reached; the local-server hint only for local servers. */
+function chatNetworkError(conn) {
+    if (conn?.kind === 'anthropic')
+        return 'The connection to Anthropic dropped (network error).';
+    if (conn?.kind === 'chatgpt')
+        return 'The connection to ChatGPT dropped (network error).';
+    let host = '';
+    try {
+        host = new URL(conn?.baseUrl ?? '').hostname;
+    }
+    catch { /* no URL */ }
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]') {
+        return `Could not reach the model server on this computer (${conn?.baseUrl}). Check that it is running; it may also need CORS opened for the extension, e.g. OLLAMA_ORIGINS.`;
+    }
+    return `The connection to ${host || 'the provider'} dropped (network error).`;
 }
 function errMessage(error) {
     if (error instanceof TypeError)

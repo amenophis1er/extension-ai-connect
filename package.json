@@ -1,6 +1,6 @@
 {
   "name": "@amenophis1er/extension-ai-connect",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "BYO-key AI provider connections for Chrome extensions: encrypted key storage, Anthropic/OpenAI-compatible/ChatGPT-subscription providers, OAuth flows, one message-passing API.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,8 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "default": "./dist/types.js"
-    }
+    },
+    "./dnr-rules.json": "./manifest/dnr-rules.json"
   },
   "files": [
     "dist",
