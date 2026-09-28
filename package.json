@@ -43,7 +43,7 @@
     "url": "git+https://github.com/amenophis1er/extension-ai-connect.git"
   },
   "author": "Amen",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": false,
   "devDependencies": {
     "@types/chrome": "^0.0.280",
