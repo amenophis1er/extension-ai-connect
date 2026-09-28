@@ -238,3 +238,7 @@ encrypted automatically on first load.
 - IndexedDB `<cryptoDbName>`: the non-extractable AES key, and one
   non-extractable Ed25519 key pair per Ollama Cloud connection
   (`ed25519:<connection id>`)
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
